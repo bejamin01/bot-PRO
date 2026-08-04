@@ -27,9 +27,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-BOT_USERNAME   = os.getenv("BOT_USERNAME", "@utm_help_bot").lower()
+TELEGRAM_TOKEN = (os.getenv("TELEGRAM_TOKEN") or "").strip()
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
+BOT_USERNAME   = (os.getenv("BOT_USERNAME", "@utm_help_bot") or "").strip().lower()
 
 def _parse_admins():
     raw = os.getenv("ADMIN_IDS", "5504260343,6501594656")
@@ -151,8 +151,8 @@ INFO_BASE = {
     "carreras_web": INFO_CARRERAS,
 }
 
-SYNC_VERSION = "2026-06-27-v7"
-BOT_VERSION = "2026-06-27-v7"
+SYNC_VERSION = "2026-08-04-v8"
+BOT_VERSION = "2026-08-04-v8"
 MSG_TTL_SEG = 600
 _usuarios_vistos_local = set()
 
