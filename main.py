@@ -155,6 +155,9 @@ SYNC_VERSION = "2026-08-04-v8"
 BOT_VERSION = "2026-08-04-v8"
 MSG_TTL_SEG = 600
 _usuarios_vistos_local = set()
+_advertencias_local = {}
+_media_groups_vistos = set()
+_ultimos_avisos_imagen = {}
 
 SECCIONES_DB = {
     "admision": ("Admisiones UTM", "admisiones", [("Postulacion UTM", URL_POSTULACION)]),
@@ -374,6 +377,43 @@ def sync_info_utm():
 def es_grupo(chat):
     return chat.type in ("group", "supergroup")
 
+async def es_usuario_admin(chat, user, message=None, context=None) -> bool:
+    if not es_grupo(chat):
+        return False
+    if message and message.sender_chat and message.sender_chat.id == chat.id:
+        return True
+    if not user:
+        return False
+    if user.id == 1087968824:
+        return True
+    if user.id in ADMINS:
+        return True
+    try:
+        member = await chat.get_member(user.id)
+        return member.status in ["administrator", "creator"]
+    except Exception:
+        return False
+
+def mensaje_tiene_enlace(message) -> bool:
+    if not message:
+        return False
+
+    entidades = list(message.entities or []) + list(message.caption_entities or [])
+    for ent in entidades:
+        if ent.type in ("url", "text_link"):
+            return True
+
+    texto_total = f"{message.text or ''} {message.caption or ''}".strip()
+    if not texto_total:
+        return False
+
+    patron_enlaces = re.compile(
+        r"(?i)\b(?:https?://|ftp://|www\.)[^\s]+"
+        r"|\b(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|edu|ec|io|me|info|biz|xyz|site|online|top|app|dev|link|vip|pro)\b(?:/[^\s]*)?"
+        r"|\b(?:t\.me|telegram\.me)/[^\s]+"
+    )
+    return bool(patron_enlaces.search(texto_total))
+
 def usuario_existe(telegram_id):
     if telegram_id in _usuarios_vistos_local:
         return True
@@ -451,6 +491,9 @@ async def enviar_temporal(chat, context, texto, reply_markup=None, extra_ids=Non
     return enviado
 
 def advertir_usuario(user_id):
+    _advertencias_local[user_id] = _advertencias_local.get(user_id, 0) + 1
+    if not DB_DISPONIBLE:
+        return _advertencias_local[user_id]
     try:
         conn = get_conn()
         result = conn.execute("""
@@ -460,10 +503,10 @@ def advertir_usuario(user_id):
             RETURNING advertencias
         """, (user_id,)).fetchone()
         conn.commit()
-        return result[0] if result else 1
+        return result[0] if result else _advertencias_local[user_id]
     except Exception as e:
         logger.error(f"Error al advertir: {e}")
-        return 1
+        return _advertencias_local[user_id]
 
 def obtener_info(clave):
     try:
@@ -666,8 +709,8 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     guardar_usuario(user)
 
-    if es_grupo and re.search(r"http[s]?://", texto):
-        if user.id not in ADMINS:
+    if es_grupo and mensaje_tiene_enlace(update.message):
+        if not await es_usuario_admin(update.effective_chat, user, update.message, context):
             adv = advertir_usuario(user.id)
             try:
                 await update.message.delete()
@@ -688,7 +731,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await enviar_temporal(
                     update.effective_chat, context,
-                    f"Advertencia {adv}/2 para {user.first_name}: No se permiten enlaces.",
+                    f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar enlaces al grupo.",
                 )
             return
 
@@ -793,6 +836,115 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION), ("Ir al SGU", URL_SGU)]),
         )
 
+async def bloquear_imagenes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if not chat or not es_grupo(chat):
+        return
+
+    if user and user.is_bot:
+        return
+
+    if await es_usuario_admin(chat, user, update.message, context):
+        return
+
+    # Borrar la imagen de inmediato
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.error(f"No se pudo borrar imagen en el grupo: {e}")
+
+    if not user:
+        return
+
+    guardar_usuario(user)
+
+    # Evitar advertencias duplicadas si envian un album o varias imagenes en rafaga
+    ahora = time.time()
+    mg_id = update.message.media_group_id
+    if mg_id:
+        if mg_id in _media_groups_vistos:
+            return
+        _media_groups_vistos.add(mg_id)
+        if len(_media_groups_vistos) > 1000:
+            _media_groups_vistos.clear()
+
+    ultimo_aviso = _ultimos_avisos_imagen.get(user.id, 0)
+    if ahora - ultimo_aviso < 4:
+        return
+    _ultimos_avisos_imagen[user.id] = ahora
+
+    adv = advertir_usuario(user.id)
+    if adv >= 2:
+        try:
+            await context.bot.ban_chat_member(
+                chat_id=chat.id,
+                user_id=user.id
+            )
+            await enviar_temporal(
+                chat, context,
+                f"{user.first_name} fue baneado por enviar imagenes.",
+            )
+        except Exception as e:
+            logger.error(f"No se pudo banear por enviar imagen: {e}")
+    else:
+        await enviar_temporal(
+            chat, context,
+            f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar imagenes al grupo.",
+        )
+
+async def bloquear_enlaces_en_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if not chat or not es_grupo(chat):
+        return
+
+    if user and user.is_bot:
+        return
+
+    if not mensaje_tiene_enlace(update.message):
+        return
+
+    if await es_usuario_admin(chat, user, update.message, context):
+        return
+
+    try:
+        await update.message.delete()
+    except Exception as e:
+        logger.error(f"No se pudo borrar enlace en media: {e}")
+
+    if not user:
+        return
+
+    guardar_usuario(user)
+
+    adv = advertir_usuario(user.id)
+    if adv >= 2:
+        try:
+            await context.bot.ban_chat_member(
+                chat_id=chat.id,
+                user_id=user.id
+            )
+            await enviar_temporal(
+                chat, context,
+                f"{user.first_name} fue baneado por enviar enlaces.",
+            )
+        except Exception as e:
+            logger.error(f"No se pudo banear por enviar enlace: {e}")
+    else:
+        await enviar_temporal(
+            chat, context,
+            f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar enlaces al grupo.",
+        )
+
 def iniciar_bd_en_background():
     def _tarea():
         if bootstrap_db():
@@ -814,6 +966,21 @@ def crear_app():
     app.add_handler(CommandHandler("horarios",   cmd_horarios))
     app.add_handler(CallbackQueryHandler(manejar_botones))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, bienvenida))
+
+    filtro_imagenes = (
+        filters.PHOTO
+        | filters.Document.IMAGE
+        | filters.Document.FileExtension("jpg")
+        | filters.Document.FileExtension("jpeg")
+        | filters.Document.FileExtension("png")
+        | filters.Document.FileExtension("webp")
+        | filters.Document.FileExtension("gif")
+        | filters.Document.FileExtension("bmp")
+        | filters.Document.FileExtension("heic")
+    )
+    app.add_handler(MessageHandler(filtro_imagenes, bloquear_imagenes))
+    filtro_media_con_enlace = filters.ChatType.GROUPS & filters.CAPTION
+    app.add_handler(MessageHandler(filtro_media_con_enlace, bloquear_enlaces_en_media))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensaje))
     return app
 
