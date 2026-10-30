@@ -1,10 +1,29 @@
 import os
 import re
+import sys
 import time
+import subprocess
 import threading
 import asyncio
 import logging
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote, urlparse
+
+def _asegurar_dependencias_kerit():
+    """Instala requirements.txt automaticamente en Kerit Cloud si faltan librerias."""
+    try:
+        import psycopg
+        import dotenv
+        import telegram
+        from google import genai
+    except ImportError:
+        req_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+        if os.path.exists(req_file):
+            print("[Kerit Cloud] Instalando dependencias desde requirements.txt...", flush=True)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req_file])
+
+_asegurar_dependencias_kerit()
+
 import psycopg
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,7 +37,7 @@ from telegram.ext import (
 )
 from google import genai
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 os.environ.pop("GOOGLE_API_KEY", None)
 
 logging.basicConfig(
@@ -509,6 +528,8 @@ def advertir_usuario(user_id):
         return _advertencias_local[user_id]
 
 def obtener_info(clave):
+    if not DB_DISPONIBLE:
+        return INFO_BASE.get(clave)
     try:
         conn = get_conn()
         result = conn.execute(
@@ -788,10 +809,10 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if any(p in texto_lower for p in ["menu", "menú", "opciones", "ayuda", "help"]):
+    if any(p in texto_lower for p in ["hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "saludos", "menu", "menú", "opciones", "ayuda", "help"]):
         await responder(
             update.message, context,
-            "Elige una opcion:",
+            "Hola! Soy el asistente virtual de la UTM.\nElige una opcion o escribe tu consulta:",
             reply_markup=menu_principal(),
         )
         return
@@ -817,7 +838,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt
         )
         respuesta = response.text or f"No pude generar una respuesta. {AVISO_WEB_UTM}"
@@ -953,6 +974,52 @@ def iniciar_bd_en_background():
 
     threading.Thread(target=_tarea, daemon=True).start()
 
+class _KeritKeepAliveHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(f"Bot UTM ({BOT_VERSION}) activo 24/7 en Kerit Cloud".encode("utf-8"))
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+def iniciar_servidor_kerit(puerto_default=8080):
+    """Inicia un servidor HTTP ligero en segundo plano para mantener activo el contenedor en Kerit Cloud (Pterodactyl)."""
+    raw_port = os.getenv("SERVER_PORT") or os.getenv("PORT") or os.getenv("KERIT_PORT") or str(puerto_default)
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = puerto_default
+
+    def _run_server():
+        try:
+            HTTPServer.allow_reuse_address = True
+            server = HTTPServer(("0.0.0.0", port), _KeritKeepAliveHandler)
+            logger.info("Servidor Keep-Alive Kerit Cloud escuchando en 0.0.0.0:%d", port)
+            server.serve_forever()
+        except Exception as exc:
+            logger.warning("No se pudo iniciar servidor Keep-Alive en puerto %d: %s", port, exc)
+
+    def _auto_ping_render():
+        """En Render, hace auto-ping a RENDER_EXTERNAL_URL cada 10 minutos para evitar modo sleep."""
+        import urllib.request
+        while True:
+            time.sleep(600)
+            url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("KEEPALIVE_URL")
+            if url:
+                try:
+                    urllib.request.urlopen(url, timeout=10).read()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_run_server, daemon=True).start()
+    threading.Thread(target=_auto_ping_render, daemon=True).start()
+
 def crear_app():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start",      cmd_start))
@@ -991,6 +1058,7 @@ if __name__ == "__main__":
     logger.info("Modo: Telegram arranca primero, BD en background")
     logger.info("Candidatos de BD: %s", [_db_host(u) for u in DATABASE_URLS] or ["ninguno - modo local"])
 
+    iniciar_servidor_kerit()
     iniciar_bd_en_background()
     logger.info("Hilo de BD iniciado en segundo plano")
     app = crear_app()

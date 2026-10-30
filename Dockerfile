@@ -11,5 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Forzar rebuild: v7
+EXPOSE 8080
+
+# Forzar rebuild: v8
 CMD ["python", "-u", "main.py"]
