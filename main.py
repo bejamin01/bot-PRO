@@ -483,7 +483,12 @@ def programar_borrado(context, chat_id, message_ids):
     )
 
 async def responder(message, context, texto, reply_markup=None, borrar_origen=True):
-    enviado = await message.reply_text(texto, reply_markup=reply_markup)
+    try:
+        enviado = await message.reply_text(texto, reply_markup=reply_markup)
+    except Exception:
+        enviado = await context.bot.send_message(
+            chat_id=message.chat_id, text=texto, reply_markup=reply_markup
+        )
     if es_grupo(message.chat):
         ids = [enviado.message_id]
         if borrar_origen and message.message_id:
@@ -492,7 +497,12 @@ async def responder(message, context, texto, reply_markup=None, borrar_origen=Tr
     return enviado
 
 async def responder_callback(query, context, texto, reply_markup=None):
-    enviado = await query.message.reply_text(texto, reply_markup=reply_markup)
+    try:
+        enviado = await query.message.reply_text(texto, reply_markup=reply_markup)
+    except Exception:
+        enviado = await context.bot.send_message(
+            chat_id=query.message.chat_id, text=texto, reply_markup=reply_markup
+        )
     if es_grupo(query.message.chat):
         ids = [enviado.message_id]
         if query.message.message_id:
@@ -1064,4 +1074,4 @@ if __name__ == "__main__":
     app = crear_app()
 
     logger.info("Bot UTM corriendo (polling Telegram)...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
