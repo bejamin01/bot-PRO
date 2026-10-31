@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import subprocess
 import threading
 import asyncio
@@ -26,7 +27,7 @@ _asegurar_dependencias_kerit()
 
 import psycopg
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -163,6 +164,93 @@ INFO_CARRERAS = (
     "Sociologia (Hibrida)\n"
     "Tecnologias Geoespaciales"
 )
+
+INFO_FECHAS = (
+    "Calendario y Fechas Importantes UTM 2026:\n\n"
+    "- Inscripciones / Postulacion: 24 enero al 01 febrero\n"
+    "- Aceptacion de cupos: 03 al 06 de abril (desde las 10:00)\n"
+    "- Matriculas S1-2026 (SGU): Segun cronograma por carrera en sgu.utm.edu.ec\n"
+    "- Modalidad: 100% en linea y gratuita\n\n"
+    f"Consultas WhatsApp:\n{CONTACTO_WHATSAPP}\n"
+    f"Horario: {HORARIO_ATENCION}"
+)
+
+REGLAS_GRUPO = (
+    "Reglas Oficiales - Grupo de Estudio UTM:\n\n"
+    "1. Prohibido enviar enlaces externos (solo administradores).\n"
+    "2. Prohibido enviar imagenes no autorizadas (solo administradores).\n"
+    "3. Prohibido el spam, ventas o publicidad ('hago tareas', 'paso examenes', etc.).\n"
+    "4. Mantener el respeto mutuo entre companeros.\n\n"
+    "Sistema de Sanciones:\n"
+    "- 1ra falta: Advertencia 1/3\n"
+    "- 2da falta: Silenciado por 1 hora (Advertencia 2/3)\n"
+    "- 3ra falta: Expulsion definitiva del grupo (3/3)"
+)
+
+FAQ_ITEMS = {
+    "faq_clave": (
+        "Olvide mi contrasena del SGU:\n\n"
+        "1. Ingresa a https://sgu.utm.edu.ec/auth/login\n"
+        "2. Haz clic en 'Olvide mi contrasena'.\n"
+        "3. Si eres estudiante nuevo, recuerda que tu contrasena inicial es tu numero de cedula completo (10 digitos).\n"
+        "4. Si sigue sin permitirte el acceso, escribe a soporte por WhatsApp: 0986616388 / 0999304713."
+    ),
+    "faq_correo": (
+        "Como saber mi Usuario y Correo Institucional UTM:\n\n"
+        "- Formato: inicial de tu primer nombre + primer apellido + ultimos 4 digitos de tu cedula.\n"
+        "- Ejemplo: Juan Perez con cedula 1312345678 -> usuario: jperez5678\n"
+        "- Correo institucional: jperez5678@utm.edu.ec\n\n"
+        "Tip: Usa el comando /miusuario Nombre Apellido Cedula para que el bot lo calcule por ti."
+    ),
+    "faq_docs": (
+        "Documentos requeridos para Matricula en el SGU:\n\n"
+        "1. Foto tamaño carnet con fondo blanco (formato imagen).\n"
+        "2. Cedula de identidad (anverso y reverso en un solo archivo PDF).\n"
+        "3. Certificado de votacion vigente (PDF).\n"
+        "4. Titulo de Bachiller o Acta de Grado refrendada (PDF)."
+    ),
+    "faq_horario": (
+        "Donde revisar mi horario de clases:\n\n"
+        "1. Entra a https://sgu.utm.edu.ec/auth/login\n"
+        "2. Dirigete al modulo Pregrado > Matricula / Inscripcion a Semestre.\n"
+        "3. Al seleccionar tus asignaturas y paralelo, podras visualizar y descargar tu horario y comprobante de matricula."
+    ),
+}
+
+def _limpiar_texto_ascii(texto: str) -> str:
+    normalizado = unicodedata.normalize("NFKD", texto.strip().lower())
+    return "".join(c for c in normalizado if c.isalnum())
+
+def calcular_credenciales_sgu(nombre: str, apellido: str, cedula: str):
+    digitos = re.sub(r"\D", "", cedula or "")
+    nombre_limpio = _limpiar_texto_ascii(nombre)
+    apellido_limpio = _limpiar_texto_ascii(apellido)
+    if not nombre_limpio or not apellido_limpio or len(digitos) < 4:
+        return None
+    usuario = f"{nombre_limpio[0]}{apellido_limpio}{digitos[-4:]}"
+    correo = f"{usuario}@utm.edu.ec"
+    return {
+        "usuario": usuario,
+        "correo": correo,
+        "contrasena": digitos,
+    }
+
+def filtrar_carreras_modalidad(modalidad: str) -> str:
+    lineas = [l.strip() for l in (obtener_info("carreras_web") or INFO_CARRERAS).splitlines() if l.strip()]
+    if modalidad == "online":
+        filtradas = [l for l in lineas if "en linea" in l.lower()]
+        titulo = "Carreras UTM - Modalidad En Linea"
+    elif modalidad == "hibrida":
+        filtradas = [l for l in lineas if "hibrida" in l.lower()]
+        titulo = "Carreras UTM - Modalidad Hibrida"
+    elif modalidad == "presencial":
+        filtradas = [l for l in lineas if "en linea" not in l.lower() and "hibrida" not in l.lower()]
+        titulo = "Carreras UTM - Modalidad Presencial"
+    else:
+        filtradas = lineas
+        titulo = "Todas las Carreras UTM"
+    listado = "\n".join(f"- {c}" for c in filtradas)
+    return f"{titulo} ({len(filtradas)}):\n\n{listado}\n\n{AVISO_WEB_UTM}"
 
 INFO_BASE = {
     "admisiones": INFO_ADMISIONES,
@@ -433,6 +521,23 @@ def mensaje_tiene_enlace(message) -> bool:
     )
     return bool(patron_enlaces.search(texto_total))
 
+PATRON_SPAM_ESTAFAS = re.compile(
+    r"(?i)\b(?:"
+    r"hago\s+tareas|hacemos\s+tareas|resuelvo\s+examenes|paso\s+examenes|"
+    r"ayuda\s+en\s+examenes|gana\s+dinero\s+desde\s+casa|venta\s+de\s+cupos|"
+    r"aseguro\s+tu\s+cupo|cupos\s+garantizados|hackear\s+sgu|cambio\s+de\s+notas"
+    r")\b"
+)
+
+def mensaje_tiene_spam(message) -> bool:
+    if not message:
+        return False
+    texto_total = f"{message.text or ''} {message.caption or ''}".strip()
+    if not texto_total:
+        return False
+    normalizado = unicodedata.normalize("NFKD", texto_total).encode("ascii", "ignore").decode("ascii")
+    return bool(PATRON_SPAM_ESTAFAS.search(normalizado))
+
 def usuario_existe(telegram_id):
     if telegram_id in _usuarios_vistos_local:
         return True
@@ -537,6 +642,53 @@ def advertir_usuario(user_id):
         logger.error(f"Error al advertir: {e}")
         return _advertencias_local[user_id]
 
+def perdonar_usuario_db(user_id):
+    _advertencias_local[user_id] = 0
+    if not DB_DISPONIBLE:
+        return
+    try:
+        conn = get_conn()
+        conn.execute("UPDATE usuarios SET advertencias = 0 WHERE telegram_id = %s", (user_id,))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error al perdonar usuario: {e}")
+
+async def aplicar_sancion_gradual(chat, user, context, motivo_corto, detalle_regla):
+    """Aplica sancion en 3 niveles: 1=Advertencia, 2=Silencio 1 hora, 3=Ban definitivo."""
+    adv = advertir_usuario(user.id)
+    if adv >= 3:
+        try:
+            await context.bot.ban_chat_member(chat_id=chat.id, user_id=user.id)
+            await enviar_temporal(
+                chat, context,
+                f"🚫 {user.first_name} fue expulsado del grupo (Advertencia 3/3) por {motivo_corto}.",
+            )
+        except Exception as e:
+            logger.error(f"No se pudo banear por {motivo_corto}: {e}")
+    elif adv == 2:
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat.id,
+                user_id=user.id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=int(time.time()) + 3600,
+            )
+            await enviar_temporal(
+                chat, context,
+                f"🔇 Advertencia 2/3 para {user.first_name}: Has sido silenciado por 1 hora ({detalle_regla}). La proxima falta sera expulsion.",
+            )
+        except Exception as e:
+            logger.error(f"No se pudo silenciar a {user.id}: {e}")
+            await enviar_temporal(
+                chat, context,
+                f"⚠️ Advertencia 2/3 para {user.first_name}: {detalle_regla}.",
+            )
+    else:
+        await enviar_temporal(
+            chat, context,
+            f"⚠️ Advertencia {adv}/3 para {user.first_name}: {detalle_regla}.",
+        )
+
 def obtener_info(clave):
     if not DB_DISPONIBLE:
         return INFO_BASE.get(clave)
@@ -550,9 +702,39 @@ def obtener_info(clave):
         logger.error(f"Error al obtener info: {e}")
         return INFO_BASE.get(clave)
 
-def markup_botones(botones):
+def markup_botones(botones=None, incluir_volver=True):
+    filas = []
+    if botones:
+        filas.append([InlineKeyboardButton(texto, url=url) for texto, url in botones])
+    if incluir_volver:
+        filas.append([InlineKeyboardButton("⬅️ Volver al Menu Principal", callback_data="menu_volver")])
+    return InlineKeyboardMarkup(filas)
+
+def markup_carreras():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(texto, url=url) for texto, url in botones]
+        [
+            InlineKeyboardButton("🏫 Presenciales", callback_data="carreras_presencial"),
+            InlineKeyboardButton("🔄 Hibridas",     callback_data="carreras_hibrida"),
+        ],
+        [
+            InlineKeyboardButton("💻 En Linea",     callback_data="carreras_online"),
+            InlineKeyboardButton("📋 Ver Todas",    callback_data="carreras_todas"),
+        ],
+        [
+            InlineKeyboardButton("📝 Portal Postulacion", url=URL_POSTULACION),
+        ],
+        [
+            InlineKeyboardButton("⬅️ Volver al Menu Principal", callback_data="menu_volver"),
+        ],
+    ])
+
+def markup_faq():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔐 Olvide mi clave del SGU", callback_data="faq_clave")],
+        [InlineKeyboardButton("📧 Como saber mi usuario/correo", callback_data="faq_correo")],
+        [InlineKeyboardButton("📄 Documentos para matricula", callback_data="faq_docs")],
+        [InlineKeyboardButton("🕒 Donde veo mi horario", callback_data="faq_horario")],
+        [InlineKeyboardButton("⬅️ Volver al Menu Principal", callback_data="menu_volver")],
     ])
 
 def texto_contacto(completo=False):
@@ -582,10 +764,11 @@ def texto_contacto(completo=False):
 async def enviar_seccion_db(message, context, seccion, footer=""):
     titulo, clave, botones = SECCIONES_DB[seccion]
     info = obtener_info(clave) or f"Informacion no disponible. {AVISO_WEB_UTM}"
+    teclado = markup_carreras() if seccion == "carreras" else markup_botones(botones)
     await responder(
         message, context,
         f"{titulo}\n\n{info}{footer}",
-        reply_markup=markup_botones(botones),
+        reply_markup=teclado,
     )
 
 def menu_principal():
@@ -596,9 +779,14 @@ def menu_principal():
         ],
         [
             InlineKeyboardButton("🎓 Carreras",   callback_data="carreras"),
-            InlineKeyboardButton("💰 Costos",     callback_data="costo"),
+            InlineKeyboardButton("🔑 Usuario SGU", callback_data="calc_sgu"),
         ],
         [
+            InlineKeyboardButton("📆 Fechas 2026", callback_data="fechas"),
+            InlineKeyboardButton("❓ Preguntas FAQ", callback_data="faq_menu"),
+        ],
+        [
+            InlineKeyboardButton("💰 Costos",     callback_data="costo"),
             InlineKeyboardButton("🕐 Horarios",   callback_data="horario"),
             InlineKeyboardButton("📍 Ubicacion",  callback_data="ubicacion"),
         ],
@@ -616,10 +804,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.message, context,
         "Hola! Soy el asistente virtual de la UTM\n\n"
         "Puedo ayudarte con informacion sobre:\n"
-        "Admisiones y matricula\n"
-        "Carreras disponibles\n"
-        "Horarios y costos\n"
-        "Contacto\n\n"
+        "- Admisiones, matricula y fechas 2026\n"
+        "- Carreras (Presenciales, Hibridas y En Linea)\n"
+        "- Calculo de tu Usuario y Correo SGU (/miusuario)\n"
+        "- Preguntas frecuentes, horarios, costos y contacto\n\n"
         "Elige una opcion o escribe tu pregunta:",
         reply_markup=menu_principal(),
     )
@@ -631,11 +819,17 @@ async def cmd_ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Menu principal\n"
         "/ayuda - Ver esta ayuda\n"
         "/admisiones - Info de admisiones 2026\n"
-        "/matricula - Como matricularse\n"
-        "/carreras - Lista de carreras\n"
+        "/matricula - Como matricularse en el SGU\n"
+        "/carreras - Carreras por modalidad\n"
+        "/miusuario - Calcular tu usuario y correo SGU\n"
+        "/fechas - Calendario de fechas importantes\n"
+        "/faq - Preguntas frecuentes\n"
         "/contacto - Datos de contacto\n"
         "/horarios - Horarios de atencion\n"
-        "Tambien puedes escribir tu pregunta directamente.",
+        "/reglas - Reglas del grupo\n\n"
+        "Comandos para Administradores:\n"
+        "/perdonar - Quitar advertencias (respondiendo a un usuario)\n"
+        "/anuncio <texto> - Publicar y fijar comunicado oficial",
         reply_markup=menu_principal(),
     )
 
@@ -643,6 +837,7 @@ async def cmd_miid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await responder(
         update.message, context,
         f"Tu ID de Telegram es: {update.effective_user.id}",
+        reply_markup=markup_botones(),
     )
 
 async def cmd_admisiones(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -652,7 +847,134 @@ async def cmd_matricula(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await enviar_seccion_db(update.message, context, "matricula")
 
 async def cmd_carreras(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await enviar_seccion_db(update.message, context, "carreras", footer=f"\n\n{AVISO_WEB_UTM}")
+    await responder(
+        update.message, context,
+        "Selecciona la modalidad de carrera que deseas consultar:",
+        reply_markup=markup_carreras(),
+    )
+
+async def cmd_fechas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await responder(
+        update.message, context,
+        INFO_FECHAS,
+        reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION), ("Ir al SGU", URL_SGU)]),
+    )
+
+async def cmd_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await responder(
+        update.message, context,
+        "Preguntas Frecuentes (FAQ) UTM:\nSelecciona tu duda:",
+        reply_markup=markup_faq(),
+    )
+
+async def cmd_reglas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await responder(
+        update.message, context,
+        REGLAS_GRUPO,
+        reply_markup=markup_botones(),
+    )
+
+async def cmd_miusuario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args or []
+    if len(args) < 3:
+        await responder(
+            update.message, context,
+            "🔑 Calculador de Usuario y Correo SGU:\n\n"
+            "Escribe el comando seguido de tu Primer Nombre, Primer Apellido y tu Cedula.\n\n"
+            "Ejemplo:\n"
+            "/miusuario Juan Perez 1312345678",
+            reply_markup=markup_botones([("Ir al SGU", URL_SGU)]),
+        )
+        return
+
+    nombre = args[0]
+    apellido = args[1]
+    cedula = args[-1]
+    datos = calcular_credenciales_sgu(nombre, apellido, cedula)
+    if not datos:
+        await responder(
+            update.message, context,
+            "Datos invalidos. Asegurate de escribir: /miusuario PrimerNombre PrimerApellido Cedula (minimo 4 digitos).\n"
+            "Ejemplo: /miusuario Juan Perez 1312345678",
+            reply_markup=markup_botones([("Ir al SGU", URL_SGU)]),
+        )
+        return
+
+    await responder(
+        update.message, context,
+        "✅ Tus credenciales estimadas para el SGU son:\n\n"
+        f"👤 Usuario SGU: {datos['usuario']}\n"
+        f"📧 Correo institucional: {datos['correo']}\n"
+        f"🔐 Contrasena inicial: {datos['contrasena']}\n\n"
+        "Nota: Si ya cambiaste tu contrasena antes o no te permite ingresar, usa la opcion 'Olvide mi contrasena' en sgu.utm.edu.ec.",
+        reply_markup=markup_botones([("Ingresar al SGU", URL_SGU)]),
+    )
+
+async def cmd_perdonar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.effective_chat:
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    if es_grupo(chat) and not await es_usuario_admin(chat, user, update.message, context):
+        await enviar_temporal(chat, context, "Solo los administradores pueden usar /perdonar.")
+        return
+
+    target_user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
+    if not target_user:
+        await responder(
+            update.message, context,
+            "Para perdonar a un usuario, responde a uno de sus mensajes con el comando /perdonar.",
+        )
+        return
+
+    perdonar_usuario_db(target_user.id)
+    if es_grupo(chat):
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat.id,
+                user_id=target_user.id,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=False,
+                ),
+            )
+        except Exception:
+            pass
+    await responder(
+        update.message, context,
+        f"✅ Se han borrado las advertencias de {target_user.first_name} y puede volver a escribir.",
+    )
+
+async def cmd_anuncio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.effective_chat:
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    if es_grupo(chat) and not await es_usuario_admin(chat, user, update.message, context):
+        await enviar_temporal(chat, context, "Solo los administradores pueden publicar anuncios.")
+        return
+
+    texto_anuncio = " ".join(context.args or []).strip()
+    if not texto_anuncio and update.message.reply_to_message:
+        texto_anuncio = update.message.reply_to_message.text or ""
+    if not texto_anuncio:
+        await responder(
+            update.message, context,
+            "Uso: /anuncioEscribe aqui el comunicado oficial para el grupo.",
+        )
+        return
+
+    enviado = await context.bot.send_message(
+        chat_id=chat.id,
+        text=f"📢 COMUNICADO OFICIAL UTM\n\n{texto_anuncio}",
+        reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION), ("Ir al SGU", URL_SGU)], incluir_volver=False),
+    )
+    if es_grupo(chat):
+        try:
+            await context.bot.pin_chat_message(chat_id=chat.id, message_id=enviado.message_id)
+        except Exception:
+            pass
 
 async def cmd_contacto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await responder(
@@ -666,6 +988,7 @@ async def cmd_horarios(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.message, context,
         "Horarios UTM\n\n"
         "Lunes a viernes 08h00 - 17h00",
+        reply_markup=markup_botones(),
     )
 
 async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,8 +996,55 @@ async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     dato = query.data
 
-    if dato in SECCIONES_DB:
+    if dato == "menu_volver":
+        await responder_callback(
+            query, context,
+            "Menu Principal UTM - Elige una opcion o escribe tu pregunta:",
+            reply_markup=menu_principal(),
+        )
+    elif dato == "carreras":
+        await responder_callback(
+            query, context,
+            "🎓 Carreras UTM\nSelecciona la modalidad que deseas consultar:",
+            reply_markup=markup_carreras(),
+        )
+    elif dato in ("carreras_presencial", "carreras_hibrida", "carreras_online", "carreras_todas"):
+        mod = dato.replace("carreras_", "")
+        await responder_callback(
+            query, context,
+            filtrar_carreras_modalidad(mod),
+            reply_markup=markup_carreras(),
+        )
+    elif dato in SECCIONES_DB:
         await enviar_seccion_db(query.message, context, dato)
+    elif dato == "calc_sgu":
+        await responder_callback(
+            query, context,
+            "🔑 Calculador de Usuario y Correo SGU:\n\n"
+            "Envia en el chat el comando:\n"
+            "/miusuario PrimerNombre PrimerApellido Cedula\n\n"
+            "Ejemplo:\n"
+            "/miusuario Juan Perez 1312345678",
+            reply_markup=markup_botones([("Ir al SGU", URL_SGU)]),
+        )
+    elif dato == "fechas":
+        await responder_callback(
+            query, context,
+            INFO_FECHAS,
+            reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION), ("Ir al SGU", URL_SGU)]),
+        )
+    elif dato == "faq_menu":
+        await responder_callback(
+            query, context,
+            "❓ Preguntas Frecuentes (FAQ) UTM:\nSelecciona una pregunta:",
+            reply_markup=markup_faq(),
+        )
+    elif dato in FAQ_ITEMS:
+        await responder_callback(
+            query, context,
+            FAQ_ITEMS[dato],
+            reply_markup=markup_faq(),
+        )
     elif dato == "costo":
         await responder_callback(
             query, context,
@@ -689,6 +1059,7 @@ async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Horarios UTM\n\n"
             "Lunes a viernes 08h00 - 17h00\n"
             "Telefono: (593 5) 263-2677",
+            reply_markup=markup_botones(),
         )
     elif dato == "ubicacion":
         await responder_callback(
@@ -740,30 +1111,20 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     guardar_usuario(user)
 
-    if es_grupo and mensaje_tiene_enlace(update.message):
+    if es_grupo and (mensaje_tiene_enlace(update.message) or mensaje_tiene_spam(update.message)):
         if not await es_usuario_admin(update.effective_chat, user, update.message, context):
-            adv = advertir_usuario(user.id)
+            es_enlace = mensaje_tiene_enlace(update.message)
             try:
                 await update.message.delete()
             except Exception:
                 pass
-            if adv >= 2:
-                try:
-                    await context.bot.ban_chat_member(
-                        chat_id=update.effective_chat.id,
-                        user_id=user.id
-                    )
-                    await enviar_temporal(
-                        update.effective_chat, context,
-                        f"{user.first_name} fue baneado por enviar enlaces.",
-                    )
-                except Exception as e:
-                    logger.error(f"No se pudo banear: {e}")
-            else:
-                await enviar_temporal(
-                    update.effective_chat, context,
-                    f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar enlaces al grupo.",
-                )
+            await aplicar_sancion_gradual(
+                update.effective_chat,
+                user,
+                context,
+                motivo_corto="enviar enlaces" if es_enlace else "enviar spam",
+                detalle_regla="Solo los administradores pueden enviar enlaces" if es_enlace else "No se permite spam ni publicidad en el grupo",
+            )
             return
 
     if es_grupo and BOT_USERNAME not in texto.lower():
@@ -780,7 +1141,27 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if any(p in texto_lower for p in ["carrera", "facultad", "oferta"]):
-        await enviar_seccion_db(update.message, context, "carreras")
+        await responder(
+            update.message, context,
+            "🎓 Carreras UTM\nSelecciona la modalidad que deseas consultar:",
+            reply_markup=markup_carreras(),
+        )
+        return
+
+    if any(p in texto_lower for p in ["fecha", "calendario", "cronograma", "cuando empieza"]):
+        await responder(
+            update.message, context,
+            INFO_FECHAS,
+            reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION), ("Ir al SGU", URL_SGU)]),
+        )
+        return
+
+    if any(p in texto_lower for p in ["olvide mi contrasena", "olvidé mi contraseña", "recuperar clave", "mi usuario", "correo institucional"]):
+        await responder(
+            update.message, context,
+            "❓ Preguntas Frecuentes (FAQ) UTM:\nSelecciona tu consulta o usa /miusuario Nombre Apellido Cedula:",
+            reply_markup=markup_faq(),
+        )
         return
 
     if any(p in texto_lower for p in ["contacto", "whatsapp", "telefono", "teléfono"]):
@@ -797,6 +1178,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Horarios UTM\n\n"
             "Lunes a viernes 08h00 - 17h00\n"
             "Telefono: (593 5) 263-2677",
+            reply_markup=markup_botones(),
         )
         return
 
@@ -806,6 +1188,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Costos UTM\n\n"
             "La UTM es universidad publica y gratuita.\n"
             "La matriculacion no tiene ningun costo.",
+            reply_markup=markup_botones([("Postulacion UTM", URL_POSTULACION)]),
         )
         return
 
@@ -909,24 +1292,13 @@ async def bloquear_imagenes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     _ultimos_avisos_imagen[user.id] = ahora
 
-    adv = advertir_usuario(user.id)
-    if adv >= 2:
-        try:
-            await context.bot.ban_chat_member(
-                chat_id=chat.id,
-                user_id=user.id
-            )
-            await enviar_temporal(
-                chat, context,
-                f"{user.first_name} fue baneado por enviar imagenes.",
-            )
-        except Exception as e:
-            logger.error(f"No se pudo banear por enviar imagen: {e}")
-    else:
-        await enviar_temporal(
-            chat, context,
-            f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar imagenes al grupo.",
-        )
+    await aplicar_sancion_gradual(
+        chat,
+        user,
+        context,
+        motivo_corto="enviar imagenes",
+        detalle_regla="Solo los administradores o el propietario pueden enviar imagenes al grupo",
+    )
 
 async def bloquear_enlaces_en_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -941,7 +1313,7 @@ async def bloquear_enlaces_en_media(update: Update, context: ContextTypes.DEFAUL
     if user and user.is_bot:
         return
 
-    if not mensaje_tiene_enlace(update.message):
+    if not (mensaje_tiene_enlace(update.message) or mensaje_tiene_spam(update.message)):
         return
 
     if await es_usuario_admin(chat, user, update.message, context):
@@ -957,24 +1329,13 @@ async def bloquear_enlaces_en_media(update: Update, context: ContextTypes.DEFAUL
 
     guardar_usuario(user)
 
-    adv = advertir_usuario(user.id)
-    if adv >= 2:
-        try:
-            await context.bot.ban_chat_member(
-                chat_id=chat.id,
-                user_id=user.id
-            )
-            await enviar_temporal(
-                chat, context,
-                f"{user.first_name} fue baneado por enviar enlaces.",
-            )
-        except Exception as e:
-            logger.error(f"No se pudo banear por enviar enlace: {e}")
-    else:
-        await enviar_temporal(
-            chat, context,
-            f"Advertencia {adv}/2 para {user.first_name}: Solo los administradores o el propietario pueden enviar enlaces al grupo.",
-        )
+    await aplicar_sancion_gradual(
+        chat,
+        user,
+        context,
+        motivo_corto="enviar enlaces",
+        detalle_regla="Solo los administradores o el propietario pueden enviar enlaces al grupo",
+    )
 
 def iniciar_bd_en_background():
     def _tarea():
@@ -1037,9 +1398,13 @@ async def _configurar_comandos_menu(application):
         ("ayuda", "Ver ayuda y opciones"),
         ("admisiones", "Info de admisiones 2026"),
         ("matricula", "Como matricularse (SGU)"),
-        ("carreras", "Lista de carreras UTM"),
+        ("carreras", "Carreras por modalidad"),
+        ("miusuario", "Calcular usuario y correo SGU"),
+        ("fechas", "Calendario de fechas 2026"),
+        ("faq", "Preguntas frecuentes"),
         ("contacto", "Datos de contacto"),
         ("horarios", "Horarios de atencion"),
+        ("reglas", "Reglas del grupo"),
     ]
     try:
         await application.bot.set_my_commands(comandos)
@@ -1055,6 +1420,12 @@ def crear_app():
     app.add_handler(CommandHandler("admisiones", cmd_admisiones))
     app.add_handler(CommandHandler("matricula",  cmd_matricula))
     app.add_handler(CommandHandler("carreras",   cmd_carreras))
+    app.add_handler(CommandHandler("miusuario",  cmd_miusuario))
+    app.add_handler(CommandHandler("fechas",     cmd_fechas))
+    app.add_handler(CommandHandler("faq",        cmd_faq))
+    app.add_handler(CommandHandler("reglas",     cmd_reglas))
+    app.add_handler(CommandHandler("perdonar",   cmd_perdonar))
+    app.add_handler(CommandHandler("anuncio",    cmd_anuncio))
     app.add_handler(CommandHandler("contacto",   cmd_contacto))
     app.add_handler(CommandHandler("horarios",   cmd_horarios))
     app.add_handler(CallbackQueryHandler(manejar_botones))
