@@ -594,10 +594,11 @@ async def responder(message, context, texto, reply_markup=None, borrar_origen=Tr
         enviado = await context.bot.send_message(
             chat_id=message.chat_id, text=texto, reply_markup=reply_markup
         )
-    ids = [enviado.message_id]
-    if borrar_origen and message.message_id:
-        ids.append(message.message_id)
-    programar_borrado(context, message.chat_id, ids)
+    if es_grupo(message.chat):
+        ids = [enviado.message_id]
+        if borrar_origen and message.message_id:
+            ids.append(message.message_id)
+        programar_borrado(context, message.chat_id, ids)
     return enviado
 
 async def responder_callback(query, context, texto, reply_markup=None):
@@ -607,10 +608,11 @@ async def responder_callback(query, context, texto, reply_markup=None):
         enviado = await context.bot.send_message(
             chat_id=query.message.chat_id, text=texto, reply_markup=reply_markup
         )
-    ids = [enviado.message_id]
-    if query.message.message_id:
-        ids.append(query.message.message_id)
-    programar_borrado(context, query.message.chat_id, ids)
+    if es_grupo(query.message.chat):
+        ids = [enviado.message_id]
+        if query.message.message_id:
+            ids.append(query.message.message_id)
+        programar_borrado(context, query.message.chat_id, ids)
     return enviado
 
 async def enviar_temporal(chat, context, texto, reply_markup=None, extra_ids=None):
