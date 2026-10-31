@@ -1030,8 +1030,24 @@ def iniciar_servidor_kerit(puerto_default=8080):
     threading.Thread(target=_run_server, daemon=True).start()
     threading.Thread(target=_auto_ping_render, daemon=True).start()
 
+async def _configurar_comandos_menu(application):
+    """Sincroniza el menu de comandos de Telegram (sin becas)."""
+    comandos = [
+        ("start", "Menu principal"),
+        ("ayuda", "Ver ayuda y opciones"),
+        ("admisiones", "Info de admisiones 2026"),
+        ("matricula", "Como matricularse (SGU)"),
+        ("carreras", "Lista de carreras UTM"),
+        ("contacto", "Datos de contacto"),
+        ("horarios", "Horarios de atencion"),
+    ]
+    try:
+        await application.bot.set_my_commands(comandos)
+    except Exception as exc:
+        logger.warning("No se pudo actualizar el menu de comandos: %s", exc)
+
 def crear_app():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(_configurar_comandos_menu).build()
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("ayuda",      cmd_ayuda))
     app.add_handler(CommandHandler("help",       cmd_ayuda))
